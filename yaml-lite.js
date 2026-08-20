@@ -180,8 +180,20 @@ function parseWorkflowYaml(text) {
     return text;
   }
 
+  // Strips leading/trailing ASCII space and tab only — YAML's own
+  // separation-whitespace, unlike JS's `.trim()`, which also strips Unicode
+  // whitespace such as U+00A0 (NBSP). A leading or trailing NBSP is real
+  // scalar content in YAML, not padding to discard: verified against
+  // yaml.safe_load("a:  \xa0hi\n") -> {'a': '\xa0hi'} (the real spaces
+  // before it ARE consumed as separation, the NBSP is not) and
+  // ("a: hi\xa0 \n") -> {'a': 'hi\xa0'} (trailing real space consumed,
+  // trailing NBSP preserved). `.trim()` would silently drop both.
+  function yamlTrim(s) {
+    return s.replace(/^[ \t]+/, "").replace(/[ \t]+$/, "");
+  }
+
   function parseScalar(text) {
-    const s = stripInlineComment(text).trim();
+    const s = yamlTrim(stripInlineComment(text));
     if (s === "") return null;
     if (s === "null" || s === "~") return null;
     if (s === "true") return true;
@@ -254,8 +266,12 @@ function parseWorkflowYaml(text) {
       // and as a sequence item's scalar ("- { a: 1 }" falls through the
       // "- key: value" check in parseSequence, since its rest starts with
       // "{" rather than a bare key, straight into this function).
-      const inner = s.slice(1, -1).trim();
-      if (inner === "") return {};
+      // isFlowBlank, not .trim() === "" — a lone NBSP between the braces is
+      // a genuine one-character key with a null value in real YAML
+      // (yaml.safe_load("a: {\xa0}\n") -> {'a': {'\xa0': None}}), not an
+      // empty flow mapping; .trim() would silently misreport it as {}.
+      const inner = s.slice(1, -1);
+      if (isFlowBlank(inner)) return {};
       throw new Error(`yaml-lite: flow mappings are not supported (got ${JSON.stringify(s)})`);
     }
     if (/^-?\d+$/.test(s)) return parseInt(s, 10);
@@ -307,8 +323,13 @@ function parseWorkflowYaml(text) {
       if (!hasBalancedFlowBrackets(s)) {
         throw new Error(`yaml-lite: unbalanced flow sequence brackets (got ${JSON.stringify(s)})`);
       }
-      const inner = s.slice(1, -1).trim();
-      if (inner === "") return [];
+      // Not trimmed before the emptiness check or the split — isFlowBlank
+      // (not .trim()) decides emptiness, and splitFlowSequence/parseScalar
+      // handle interior separation whitespace themselves; trimming here
+      // first would strip a leading/trailing NBSP element's own content
+      // before either ever saw it.
+      const inner = s.slice(1, -1);
+      if (isFlowBlank(inner)) return [];
       return splitFlowSequence(inner).map(parseScalar);
     }
     // An unquoted plain scalar containing ": " (colon then whitespace) or
@@ -474,8 +495,17 @@ function parseWorkflowYaml(text) {
       // last split point), not wherever one happens to appear —
       // `[echo "hi, x", b]` is a plain scalar `echo "hi` split at the
       // embedded comma the same as GitHub's own parser, not one long
-      // quoted element. Verified against yaml.safe_load.
-      if ((ch === "'" || ch === '"') && current.trim() === "") {
+      // quoted element. Verified against yaml.safe_load. isFlowBlank, not
+      // `.trim() === ""` — JS's trim() strips Unicode whitespace including
+      // U+00A0 (NBSP), which isn't genuine YAML flow-context whitespace: a
+      // real NBSP before a quote is itself the element's first character
+      // and must NOT let the quote open (yaml.safe_load('a: [\xa0"hi", b]\n')
+      // -> {'a': ['\xa0"hi"', 'b']}, the quote never recognized as one),
+      // and a lone NBSP between two commas is a real one-character element,
+      // not an empty one (yaml.safe_load('a: [x,\xa0,y]\n') ->
+      // {'a': ['x', '\xa0', 'y']}) — `.trim()` would have silently thrown
+      // "empty element" on that valid input.
+      if ((ch === "'" || ch === '"') && isFlowBlank(current)) {
         quote = ch;
         current += ch;
         continue;
@@ -489,10 +519,10 @@ function parseWorkflowYaml(text) {
         // trailing comma ("[a,b,]") is valid and never reaches this throw:
         // it splits off "b" here (current is non-empty at that point) and
         // the resulting empty tail is dropped below, after the loop, by
-        // the trim() check that already existed — this only rejects an
-        // element that is empty at a SPLIT point, not the harmless nothing
-        // that follows the sequence's own last comma.
-        if (current.trim() === "") {
+        // the same isFlowBlank check — this only rejects an element that is
+        // empty at a SPLIT point, not the harmless nothing that follows the
+        // sequence's own last comma.
+        if (isFlowBlank(current)) {
           throw new Error(
             `yaml-lite: empty element in flow sequence (got ${JSON.stringify(`[${inner}]`)})`,
           );
@@ -503,8 +533,17 @@ function parseWorkflowYaml(text) {
       }
       current += ch;
     }
-    if (current.trim() !== "") parts.push(current);
+    if (!isFlowBlank(current)) parts.push(current);
     return parts;
+  }
+
+  // True only for a run of ASCII spaces/tabs (or nothing) — YAML's own
+  // flow-context whitespace, unlike JS's `.trim()`, which also strips
+  // Unicode whitespace such as U+00A0 (NBSP). Used by splitFlowSequence to
+  // decide "has this element genuinely started yet" without mistaking a
+  // real NBSP character for nothing at all.
+  function isFlowBlank(s) {
+    return /^[ \t]*$/.test(s);
   }
 
   // Consumes a `|`/`|-`/`|+`/`>`/`>-`/`>+` block scalar, reading RAW lines
@@ -661,24 +700,31 @@ function parseWorkflowYaml(text) {
   // looking at exactly this shape on the first line of a deeper-indented
   // block, so this mirrors that rule rather than reinventing one.
   //
-  // Deliberately still \s here, unlike the narrower [ \t] fixes elsewhere in
-  // this file (parseScalar's colon check, stripInlineComment, and
-  // hasBalancedFlowBrackets) — those each fix a single character
-  // classification without changing what gets PARSED as. This regex decides
-  // whether a whole line is treated as a mapping key at all; narrowing it
-  // would mean a key:value pair using \u00A0 (NBSP) as its separator
-  // ("a:\xa0b") stops being read as a mapping and becomes one long plain
-  // scalar instead (verified against yaml.safe_load, which really does
-  // treat it that way) — a document-shape change, not a leaf-level
-  // correction, and one this file has not verified every consequence of.
-  // Same reasoning applies to splitKeyValue's own copy of this pattern
-  // below, and to splitFlowSequence's `current.trim() === ""` element-start
-  // check, which strips NBSP the same way \s would. Left as a known,
-  // considered boundary rather than chased under the same pressure that
-  // got block-scalar folding wrong twice before it was verified line by
-  // line — narrow the file's stated scope further only with the same
-  // rigor those fixes needed.
-  const MAPPING_KEY_RE = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^:]+?):(?:\s.*)?$/;
+  // [ \t], not \s — same reason as the narrower fixes elsewhere in this file
+  // (parseScalar's colon check, stripInlineComment, hasBalancedFlowBrackets),
+  // but this one was left as \s for a full round before being fixed here
+  // too, on the theory that narrowing it would change whether a whole line
+  // is parsed as a mapping key at all rather than just a leaf-level
+  // correction. That theory was wrong in a way Codex review caught directly:
+  // leaving MAPPING_KEY_RE/splitKeyValue matching NBSP as a separator while
+  // parseScalar's colon check no longer did created a genuine two-sided
+  // inconsistency, not a merely-incomplete fix — "outer:\n  k:\xa0Build:
+  // \xa0Linux\n" parsed as the wrong STRUCTURE ({outer: {k: "Build:\xa0Linux"}})
+  // rather than throwing or matching real YAML's actual (admittedly strange)
+  // reading, {outer: "k:\xa0Build:\xa0Linux"} — a single plain scalar, because
+  // NEITHER colon is followed by real separation whitespace. Narrowed here
+  // too: since a bare key ([^:]+?) can never itself contain a colon, the
+  // first colon is the ONLY split point this regex ever tries, so a
+  // colon-then-NBSP line like "k:\xa0Build:\xa0Linux" now fails to match at
+  // all — correctly falling through to parseNode's implicit-multi-line-
+  // plain-scalar exclusion (a construct already out of scope, see there)
+  // instead of silently returning a wrong nested structure. Verified this
+  // doesn't reject any genuinely-separated case: a block-scalar header with
+  // no whitespace before its indicator ("run:|", no space) isn't valid
+  // mapping-value syntax in real YAML either (yaml.safe_load reads the whole
+  // multi-line input as one bare plain scalar, 'run:| echo hi'), so failing
+  // to match it here isn't a new gap.
+  const MAPPING_KEY_RE = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^:]+?):(?:[ \t].*)?$/;
 
   function parseNode(indent) {
     const line = peek();
@@ -814,7 +860,9 @@ function parseWorkflowYaml(text) {
   }
 
   function splitKeyValue(content) {
-    const m = content.match(/^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^:]+?):(?:\s(.*))?$/);
+    // [ \t], not \s — same fix and same reason as MAPPING_KEY_RE above,
+    // which this pattern mirrors; keep the two in sync.
+    const m = content.match(/^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^:]+?):(?:[ \t](.*))?$/);
     if (!m) throw new Error(`yaml-lite: could not parse mapping entry: ${JSON.stringify(content)}`);
     let key = m[1].trim();
     if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {

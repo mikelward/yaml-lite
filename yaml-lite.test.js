@@ -613,6 +613,51 @@ test("does not treat U+00A0 (NBSP) as YAML separation whitespace", () => {
   assert.equal(doc3.a, "b");
 });
 
+test("NBSP is never treated as a valid mapping-key or flow-sequence separator", () => {
+  // Found by Codex review after the narrower colon-check fix above: leaving
+  // MAPPING_KEY_RE/splitKeyValue matching NBSP as a separator while
+  // parseScalar's own colon check no longer did created a genuine
+  // inconsistency — "outer:\n  k:\xa0Build:\xa0Linux\n" parsed as the WRONG
+  // structure ({outer: {k: "Build:\xa0Linux"}}) instead of throwing or
+  // matching real YAML's actual reading ({outer: "k:\xa0Build:\xa0Linux"},
+  // one plain scalar, since neither colon has real separation whitespace
+  // after it). Narrowed the separator match too: a bare key can never
+  // itself contain a colon, so the first colon is the only split point
+  // tried, and this now correctly falls through to the implicit-multi-line-
+  // scalar exclusion instead of silently returning wrong nested structure.
+  assert.throws(
+    () => parseWorkflowYaml("outer:\n  k: Build: Linux\n"),
+    /implicit multi-line plain scalar/,
+  );
+  // A real space still works as an ordinary separator.
+  const doc = parseWorkflowYaml("outer:\n  k: v\n");
+  assert.equal(doc.outer.k, "v");
+});
+
+test("NBSP is preserved as real content in flow sequences and flow mappings, not trimmed or treated as empty", () => {
+  // Same root cause (JS's .trim() strips Unicode whitespace including
+  // NBSP, but YAML's own separation-whitespace doesn't), four call sites:
+  // an NBSP before a quote must not let it open as a quoted element
+  // (yaml.safe_load('a: [\xa0"hi", b]\n') -> {'a': ['\xa0"hi"', 'b']}, the
+  // quote never recognized as one); a lone NBSP between commas is a real
+  // one-character element, not an empty one to reject
+  // (yaml.safe_load('a: [x,\xa0,y]\n') -> {'a': ['x', '\xa0', 'y']}); and
+  // "{\xa0}" is a non-empty flow mapping (a key that's a single NBSP with a
+  // null value: yaml.safe_load('a: {\xa0}\n') -> {'a': {'\xa0': None}}),
+  // not the empty-mapping shorthand this parser supports.
+  const doc = parseWorkflowYaml('a: [ "hi", b]\n');
+  assert.deepEqual(doc.a, [' "hi"', "b"]);
+  const doc2 = parseWorkflowYaml("a: [x, ,y]\n");
+  assert.deepEqual(doc2.a, ["x", " ", "y"]);
+  assert.throws(
+    () => parseWorkflowYaml("a: { }\n"),
+    /flow mappings are not supported/,
+  );
+  // A genuinely empty flow mapping/sequence still works.
+  assert.deepEqual(parseWorkflowYaml("a: {}\n").a, {});
+  assert.deepEqual(parseWorkflowYaml("a: []\n").a, []);
+});
+
 test("throws on an unterminated quoted scalar, rather than returning the malformed text as a plain string", () => {
   // `name: "example` (no closing quote) previously fell through every
   // quoted-scalar branch — startsWith('"') && endsWith('"') was false, since
