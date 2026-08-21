@@ -780,6 +780,54 @@ test("a bare dash is a valid flow-sequence element, but dash-then-space is not",
   }
 });
 
+test("parses a block-scalar header carrying an inline comment", () => {
+  // Real YAML GitHub accepts: the comment sits after the header, outside
+  // the scalar's own content. Verified against yaml.safe_load:
+  //   "a: | # c\n  x\n"  => {'a': 'x\n'}
+  //   "a: |- # c\n  x\n" => {'a': 'x'}
+  //   "a: | # c\n"       => {'a': ''}
+  // Previously the raw rest "| # c" missed the header match, so the value
+  // parsed as the plain scalar "|" (empty body) or died on the indented
+  // body line as an unsupported construct.
+  assert.deepEqual(parseWorkflowYaml("a: | # c\n  x\n"), { a: "x\n" });
+  assert.deepEqual(parseWorkflowYaml("a: |- # c\n  x\n"), { a: "x" });
+  assert.deepEqual(parseWorkflowYaml("a: | # c\n"), { a: "" });
+  // Multiple spaces before the comment, and a tab INSIDE the comment, are
+  // both fine — yaml.safe_load("a: |  # c\n  x\n") and
+  // ("a: | #\tc\n  x\n") are {'a': 'x\n'}.
+  assert.deepEqual(parseWorkflowYaml("a: |  # c\n  x\n"), { a: "x\n" });
+  assert.deepEqual(parseWorkflowYaml("a: | #\tc\n  x\n"), { a: "x\n" });
+});
+
+test("throws on a block-scalar header that isn't the supported space-separated form", () => {
+  // Codex review of the commented-header fix's first version: it stripped
+  // the comment with stripInlineComment (whose whitespace is \s-shaped)
+  // before matching, so a TAB-separated comment ("a: |\t# c\n  x\n") read
+  // as a valid header — but yaml.safe_load raises "while scanning a block
+  // scalar" for it: the separation before a header comment must be
+  // spaces. The same scan rejects any other trailing junk ("a: |x",
+  // "a: >=1.2" unquoted — which is why >=-style version bounds get quoted
+  // in real YAML), while a valid indentation indicator ("a: |2\n    x\n"
+  // => {'a': '  x\n'}) is real YAML this parser deliberately doesn't
+  // implement. All of these previously fell through to parseScalar and
+  // came back as literal strings; all must throw.
+  for (const input of [
+    "a: |\t# c\n  x\n",
+    "a: |\t# c\n",
+    "a: |x\n",
+    "a: >=1.2\n",
+    "a: |#c\n  x\n",
+    "a: |2\n    x\n",
+    "a: >2- # c\n  x\n",
+  ]) {
+    assert.throws(
+      () => parseWorkflowYaml(input),
+      /unsupported or malformed block scalar header/,
+      `expected a throw for ${JSON.stringify(input)}`,
+    );
+  }
+});
+
 test("round-trips a representative GitHub Actions workflow without throwing", () => {
   // Not any one real consumer's file (this repo has no workflow of its
   // own to round-trip) — a small but structurally representative sample:

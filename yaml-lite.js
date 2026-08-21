@@ -779,9 +779,31 @@ function parseWorkflowYaml(text) {
       key = parseScalar(key);
     }
     const rest = (m[2] ?? "").trim();
-    const blockMatch = rest.match(/^([|>])([+-]?)$/);
+    // A block-scalar header may carry an inline comment — "run: | # why"
+    // is real YAML GitHub accepts; verified against yaml.safe_load:
+    // "a: | # c\n  x\n" is {'a': 'x\n'} and "a: | # c\n" is {'a': ''}.
+    // Matching the raw rest missed the header, so the value parsed as the
+    // plain scalar "|" (silently wrong) or died on the indented body as an
+    // unsupported construct. The separation before the comment must be
+    // SPACES — ` +`, not stripInlineComment's \s-shaped idea of
+    // whitespace: "a: |\t# c\n  x\n" raises in yaml.safe_load ("while
+    // scanning a block scalar"), so a tab there must not read as a valid
+    // commented header (Codex review of the first version, which stripped
+    // the comment before matching and so accepted the tab form).
+    const blockMatch = rest.match(/^([|>])([+-]?)(?: +#.*)?$/);
     if (blockMatch) {
       return { key, rest: "", isBlockScalar: true, style: blockMatch[1], chomp: blockMatch[2] };
+    }
+    // Anything ELSE starting with | or > is block-scalar territory that
+    // isn't the supported header form — either invalid YAML ("a: |x",
+    // "a: >=1.2" unquoted, "a: |\t# c" — all raise "while scanning a
+    // block scalar" in yaml.safe_load) or a valid indentation indicator
+    // ("a: |2\n    x\n" => {'a': '  x\n'}) this parser deliberately
+    // doesn't implement. Both previously fell through to parseScalar and
+    // came back as a literal string; throwing keeps the header contract
+    // for out-of-scope constructs either way.
+    if (rest.startsWith("|") || rest.startsWith(">")) {
+      throw new Error(`yaml-lite: unsupported or malformed block scalar header (got ${JSON.stringify(rest)})`);
     }
     return { key, rest, isBlockScalar: false };
   }
