@@ -727,6 +727,59 @@ test("throws a clearly-scoped error on an implicit multi-line plain scalar block
   assert.equal(doc.a.b, 1);
 });
 
+test("throws on a sequence entry in value position, rather than fabricating a literal string", () => {
+  // Four shapes all previously fell through to the plain-scalar return and
+  // came back as the literal text ("- x"), each verified against
+  // yaml.safe_load ('python3 -c "import yaml; ..."'):
+  //   "a:\n  - - x\n" => {'a': [['x']]}   — real YAML, a nested sequence,
+  //     out of this parser's scope, so it must throw rather than return
+  //     the fabricated string "- x";
+  //   "- - a\n"       => [['a']]          — same;
+  //   "a: - b\n"      raises "sequence entries are not allowed here";
+  //   "a: [- b]\n"    raises "while parsing a flow node".
+  for (const input of ["a:\n  - - x\n", "- - a\n", "a: - b\n", "a: [- b]\n"]) {
+    assert.throws(
+      () => parseWorkflowYaml(input),
+      /sequence entry in value position/,
+      `expected a throw for ${JSON.stringify(input)}`,
+    );
+  }
+  // A bare "-" in value position is the same indicator with no content:
+  // yaml.safe_load("a: -\n") raises "sequence entries are not allowed
+  // here" too.
+  assert.throws(() => parseWorkflowYaml("a: -\n"), /sequence entry in value position/);
+});
+
+test("does not false-positive on dashes that are legitimate plain-scalar content", () => {
+  // ns-plain-first permits "-" when followed by a non-space character, so
+  // negative numbers and dash-prefixed words stay values, and a QUOTED
+  // "- b" is ordinary content — all verified against yaml.safe_load.
+  assert.deepEqual(parseWorkflowYaml("a: -1\n"), { a: -1 });
+  assert.deepEqual(parseWorkflowYaml("a: -x\n"), { a: "-x" });
+  assert.deepEqual(parseWorkflowYaml("list:\n  - -1\n"), { list: [-1] });
+  assert.deepEqual(parseWorkflowYaml('a: "- b"\n'), { a: "- b" });
+});
+
+test("a bare dash is a valid flow-sequence element, but dash-then-space is not", () => {
+  // Codex review of the first version of this rejection: a bare "-" is a
+  // real string element in flow context, because there the dash is
+  // followed by "]" or ",", not whitespace. Verified against
+  // yaml.safe_load: "a: [-]" => {'a': ['-']}; "a: [-, x]" =>
+  // {'a': ['-', 'x']}; 'a: ["a", -]' => {'a': ['a', '-']} — while
+  // "a: [ - ]", "a: [x, - ]" (dash followed by a space) and "a: [- b]"
+  // all raise. The block-value cases ("a: -", "a: - b") keep throwing.
+  assert.deepEqual(parseWorkflowYaml("a: [-]\n"), { a: ["-"] });
+  assert.deepEqual(parseWorkflowYaml("a: [-, x]\n"), { a: ["-", "x"] });
+  assert.deepEqual(parseWorkflowYaml('a: ["a", -]\n'), { a: ["a", "-"] });
+  for (const input of ["a: [ - ]\n", "a: [x, - ]\n", "a: [- b]\n"]) {
+    assert.throws(
+      () => parseWorkflowYaml(input),
+      /sequence entry in value position/,
+      `expected a throw for ${JSON.stringify(input)}`,
+    );
+  }
+});
+
 test("round-trips a representative GitHub Actions workflow without throwing", () => {
   // Not any one real consumer's file (this repo has no workflow of its
   // own to round-trip) — a small but structurally representative sample:
