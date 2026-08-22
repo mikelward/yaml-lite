@@ -2,44 +2,94 @@ name: ci
 
 # Consumers check this repository out at `@main` -- no tag, no SHA,
 # deliberately -- so this suite runs on the pull request, which is the only
-# gate between a change here and every consumer's next CI run: there is no
-# release step afterwards to catch anything. The `push` run below re-checks
-# the commit the merge produced.
+# gate between a change here and every consumer's next CI run. The `push`
+# run below re-checks the commit the merge produced.
+#
+# `pull_request_target`, not `pull_request` -- this repository pilots the
+# fleet's trusted-verdicts design (mikelward/lanes TODO.md, "Trusted
+# verdicts need an explicit publisher"). Under plain `pull_request` the job
+# DEFINITIONS load from the pull request's own merge ref, so a PR editing
+# this file could rewrite any job to `exit 0` and mint its own green
+# required check. Under `pull_request_target` this file always loads from
+# the base branch, and the required `lanes` verdict is posted as a commit
+# status by a dedicated GitHub App (the init/finalize jobs below) whose
+# credential lives in the `lanes` environment, restricted to the base ref
+# -- an identity no PR-controlled run can produce. The PR's own code still
+# runs (the test job checks out and tests the merge snapshot), but nothing
+# it can touch mints the verdict.
+#
+# The trade this trigger forces: jobs default to the BASE's checkout and
+# GITHUB_SHA is the base tip, so every job that must see the pull request
+# explicitly checks out the synthetic merge ref, and no job that runs PR
+# code may reference `secrets.*` or carry an `environment:` -- under this
+# trigger the secrets context is reachable regardless of `permissions:`,
+# so the only containment is not naming them where PR code executes.
 on:
   push:
     branches: [main]
-  pull_request:
+  pull_request_target:
     # `edited` is here because a retarget changes what the PR's diff is
-    # measured against while the head -- and any `lanes` check run already
-    # minted on it -- stays put, so a base change must start a fresh run.
-    # Title and body edits re-run the lane too, deliberately: a skipped
-    # job would be worse, because GitHub counts a skipped required check
-    # as satisfied, so skipping the gate on a "harmless" edit would let a
-    # newer skipped run replace a red verdict on the same head.
+    # measured against while the head -- and any `lanes` status already
+    # posted on it -- stays put, so a base change must start a fresh run
+    # whose finalize overwrites the stale verdict.
     types: [opened, synchronize, reopened, edited]
 
-# Nothing here writes to the repository. The docs lane's classify and lanes
-# jobs read the PR's files and commits through the workflow token;
-# read-only, and still nothing here can write.
-permissions:
-  contents: read
-  pull-requests: read
+# One run per pull request, newest wins: a superseded run canceled here
+# cannot land its terminal status write AFTER the newer run's and leave a
+# stale verdict as the latest `lanes` status on the commit. Push runs group
+# by ref for the same reason.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Every job declares exactly what it needs; nothing inherits the
+# repository default.
+permissions: {}
 
 jobs:
+  # Posts `lanes: pending` as the App before anything else runs -- pending
+  # never satisfies a required check, so a merge attempted while a fresh
+  # run is still underway is refused rather than waved through on the
+  # previous run's stale success. No checkout, no policy read: this job
+  # exists only to write that one status, first in the graph (classify
+  # `needs:` it, so nothing can outrun it).
+  init:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: lanes
+    permissions:
+      statuses: write
+    steps:
+      - uses: mikelward/lanes@main
+        with:
+          mode: init
+          app-id: ${{ secrets.LANES_APP_ID }}
+          app-private-key: ${{ secrets.LANES_APP_PRIVATE_KEY }}
+
   # Decides whether the test job may skip: true only when every changed
   # file in the PR is housekeeping (markdown -- see .github/lanes.conf for
   # the rule; the engine is mikelward/lanes). Pushes to main are always
-  # classified as code.
+  # classified as code. Checks out the merge snapshot, never the head:
+  # readPolicy reads .github/lanes.conf from this checkout while the diff
+  # comes from the API, and only the merge ref keeps the two in agreement
+  # when the base has moved the policy since the branch was cut. Reading
+  # the policy file is not executing PR code; nothing else from the
+  # checkout runs here, and no `secrets.*` appears in this job.
   classify:
     name: Classify the diff
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    needs: init
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       docs_only: ${{ steps.lane.outputs.docs_only }}
       base_sha: ${{ steps.lane.outputs.base_sha }}
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
           persist-credentials: false
       - uses: mikelward/lanes@main
         id: lane
@@ -47,40 +97,57 @@ jobs:
           mode: classify
           pr: ${{ github.event.pull_request.number }}
 
+  # The one job that executes pull-request code, on the merge snapshot a
+  # plain `pull_request` run would have built. It references no
+  # `secrets.*` and carries no `environment:`, so the App credential and
+  # every other secret stay out of reach of the code it runs.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: classify
     if: needs.classify.outputs.docs_only != 'true'
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
           persist-credentials: false
       - run: node --test *.test.js
 
-  # The one check the main ruleset should require alongside `codex` and
-  # `zizmor`. Always runs, always reports -- green only when the test job
-  # succeeded, or when it was skipped and the skip is INDEPENDENTLY
-  # verified as justified: the gate re-derives the classification itself
-  # rather than trusting classify's output. Any other combination is an
-  # explicit red, never a silent pass.
-  lanes:
-    name: lanes
+  # Re-derives the verdict independently (mode: gate) and publishes it as
+  # the App-posted `lanes` commit status on the PR's actual head -- the
+  # check the ruleset requires, restricted to the App's identity. The
+  # job's own check-run is named `finalize` so it is never confused with
+  # that status; under this trigger it attributes to the base tip and
+  # must never itself be required. `!cancelled()` rather than `always()`:
+  # a run superseded and canceled by the concurrency group above must NOT
+  # run to completion and publish a stale verdict after the newer run's.
+  finalize:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [classify, test]
-    if: always()
+    needs: [init, classify, test]
+    if: ${{ !cancelled() }}
+    environment: lanes
+    permissions:
+      statuses: write
+      pull-requests: read
+      contents: read
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || '' }}
           persist-credentials: false
       - uses: mikelward/lanes@main
         with:
           mode: gate
           pr: ${{ github.event.pull_request.number }}
           classify-result: ${{ needs.classify.result }}
-          # Only read on a dispatched run, and harmless on a pull_request
-          # one, which takes the same commit from its own event payload.
+          # Only read on a dispatched run, and harmless on a
+          # pull_request_target one, which takes the same commit from its
+          # own event payload.
           base-sha: ${{ needs.classify.outputs.base_sha }}
           results: >-
             test=${{ needs.test.result }}
+          app-id: ${{ secrets.LANES_APP_ID }}
+          app-private-key: ${{ secrets.LANES_APP_PRIVATE_KEY }}
