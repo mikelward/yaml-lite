@@ -12,9 +12,14 @@ regex against serialized YAML text. It originated in
 `mikelward/ci-commit-artifact`, was copied "verbatim" into
 `mikelward/npm-update`, and the two copies then drifted independently for a
 while before being reconciled back into one file here — this repository
-exists so that doesn't happen again. See `README.md` for who should vendor
-this file versus who should just take a real YAML library as a dependency
-instead.
+exists so that doesn't happen again. Consumers do not vendor copies: their
+CI checks this repository out at `@main` and their suites resolve the
+parser from that checkout (a sibling clone locally), so a merge here
+reaches every consumer's next CI run with nothing to sync — which also
+means a change here can redden a consumer's CI directly; their suites are
+part of a change's blast radius. See `README.md` for who should consume
+this file that way versus who should just take a real YAML library as a
+dependency instead.
 
 Keep this file as short as it can be and still work. Every session loads it
 whole, so each rule costs context on every turn: add one the first time
@@ -25,11 +30,11 @@ one that has stopped biting.
 ## What this repository must not grow
 
 - **No dependencies. No `package.json`, no lockfile, no build step.** The
-  file a consumer vendors is the file here — that's what makes an unpinned
-  copy reviewable by reading it, and it's the whole reason this file isn't
-  simply "depend on js-yaml." A consumer with a real dependency graph should
-  use a real library instead (see `README.md`); this repository is for the
-  ones that can't.
+  file a consumer's CI checks out at `@main` and runs is the file here —
+  that's what makes tracking it reviewable by reading it, and it's the
+  whole reason this file isn't simply "depend on js-yaml." A consumer with
+  a real dependency graph should use a real library instead (see
+  `README.md`); this repository is for the ones that can't.
 - **Scope is deliberately narrow, and staying narrow is the point.** Block
   mappings/sequences, flow sequences, plain/quoted scalars, literal/folded
   block scalars — nothing else. Anchors, aliases, tags, multi-document
@@ -112,11 +117,11 @@ one that has stopped biting.
 - A clear, plain-English subject in sentence case, short (≤ ~70 chars) and
   free of internal jargon. Mechanism and file:line detail go in the body,
   after a blank line.
-- **Prefix a subject that does not change what a consumer's vendored copy
-  does**: `docs:` for prose, `test:` for tests alone, `build:` for this
-  repository's own CI, and `refactor:` for deliberately behavior-preserving
-  code. A bare subject means a vendored copy's behavior could change on
-  sync. There is no `feat:` or `fix:`, on purpose — they would prefix nearly
+- **Prefix a subject that does not change what a consumer runs**: `docs:`
+  for prose, `test:` for tests alone, `build:` for this repository's own
+  CI, and `refactor:` for deliberately behavior-preserving code. A bare
+  subject means every consumer's next CI run could notice the difference.
+  There is no `feat:` or `fix:`, on purpose — they would prefix nearly
   everything and leave the log as flat as it started.
 
 ## Talking to the user

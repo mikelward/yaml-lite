@@ -39,20 +39,38 @@ build step (bundling many files into one) or a runtime dependency.
 
 ## Using this in a dependency-free repository
 
-There's no package registry involved — vendor a copy of `yaml-lite.js`
-(and, if useful, `yaml-lite.test.js`) directly into your repository, same as
-you'd vendor any small dependency-free file. To keep a vendored copy from
-silently drifting from this one (the exact problem that motivated
-extracting this repository in the first place — two copies of this same
-file drifted independently for a while before being reconciled), add a test
-in your own repository that pins the vendored file's content — a hash
-check, or a byte-for-byte comparison against a copy fetched at some fixed
-commit — so a future edit to the vendored copy alone, without a matching
-edit or a deliberate re-vendor here, fails loudly instead of quietly.
+There's no package registry involved, and no vendored copies either — copies
+of this exact file drifting apart is the problem that motivated extracting
+this repository in the first place. Consume it the way the fleet consumes
+all its shared machinery (`mikelward/lanes`, `mikelward/codex-review`, the
+reusable workflows themselves): track `@main`.
 
-When you do pull in a fix from here, note the commit you synced from in the
-vendored file's header comment (see the existing header in `yaml-lite.js`
-for the convention), so the next person can tell how stale their copy is.
+- **In CI**: add a checkout of this repository into your test job before the
+  suite runs —
+
+  ```yaml
+  - uses: actions/checkout@v5
+    with:
+      repository: mikelward/yaml-lite
+      path: .yaml-lite
+      persist-credentials: false
+  ```
+
+- **In the test suite**: resolve the parser from `.yaml-lite/yaml-lite.js`,
+  falling back to a sibling clone (`../yaml-lite/yaml-lite.js`) for local
+  runs, and **fail loudly — never skip — when neither exists**, with the
+  clone command in the error message. A skip would let CI go green with the
+  structural checks silently not running; a missing checkout must be red.
+  See `resolve-yaml-lite.js` in `mikelward/ci-commit-artifact` for the
+  reference shape.
+
+- **Locally**: `git clone https://github.com/mikelward/yaml-lite ../yaml-lite`
+  once, next to your checkout.
+
+The trade this makes, deliberately: a merge here reaches every consumer's
+next CI run with nothing to sync — and can therefore redden a consumer's CI
+directly. Consumers' suites are part of a change's blast radius; this
+repository's own suite is necessary, not sufficient.
 
 ## Testing
 
