@@ -12,10 +12,12 @@
 // duplicate-key detection, __proto__ safety, tag/reserved-character/quote/
 // bracket validation and empty-flow-sequence-element rejection; npm-update
 // independently gained the "more than one separation space after a sequence
-// dash" fix. This file merges both lines of fixes back into one, so there is
-// exactly one parser other repos vendor a copy of, not two that quietly
-// disagree. If you find a bug or a gap here, fix it here first, then sync
-// the copies in every consumer (see this repo's own AGENTS.md).
+// dash" fix. This file merges both lines of fixes back into one, so there
+// is exactly one parser, not two that quietly disagree. Consumers no
+// longer vendor copies at all: their CI checks this repository out at
+// @main and their test suites resolve the parser from that checkout (a
+// sibling clone locally) — so a fix here reaches every consumer's next CI
+// run with nothing to sync. Fix bugs and gaps here, only here.
 //
 // Exists so a consuming repo's tests can assert real structure instead of
 // regex/string-matching over serialized YAML text. That fragility is exactly
