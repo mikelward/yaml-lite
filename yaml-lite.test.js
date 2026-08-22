@@ -727,6 +727,100 @@ test("throws a clearly-scoped error on an implicit multi-line plain scalar block
   assert.equal(doc.a.b, 1);
 });
 
+test("throws a clearly-scoped error on a document-stream marker, not a confusing generic one", () => {
+  // "---"/"..." are multi-document-stream syntax — out of scope per the
+  // file header — but before this check existed they fell through to two
+  // different, unrelated, misleading errors depending on position: a
+  // leading "---" hit parseNode's "implicit multi-line plain scalar"
+  // guess (wrong diagnosis — it isn't a scalar continuation at all), and
+  // a later "---" or "..." hit splitKeyValue's generic "could not parse
+  // mapping entry" (technically true, but doesn't name what's actually
+  // there). Verified against yaml.safe_load: a lone leading "---" or
+  // trailing "..." around a SINGLE document is legal YAML and parses fine
+  // ("---\nfoo: bar\n" -> {'foo': 'bar'}; "foo: bar\n...\n" -> {'foo':
+  // 'bar'}), but this parser doesn't model that nuance -- a workflow file
+  // has no reason to carry a document marker at all, so every occurrence
+  // is rejected uniformly with one clear error naming the real cause,
+  // rather than risk a subtly wrong "it's fine here but not there"
+  // implementation for a construct this file's own header already
+  // excludes.
+  assert.throws(
+    () => parseWorkflowYaml("---\nfoo: bar\n"),
+    /multi-document streams/,
+  );
+  assert.throws(
+    () => parseWorkflowYaml("foo: bar\n---\nbaz: qux\n"),
+    /multi-document streams/,
+  );
+  assert.throws(
+    () => parseWorkflowYaml("foo: bar\n...\n"),
+    /multi-document streams/,
+  );
+  // Legal trailing forms (Codex review, mikelward/yaml-lite#6): verified
+  // against yaml.safe_load, "--- # comment", "---   " (trailing separation
+  // space), and "--- foo" (inline content on the marker's own line) all
+  // parse as ordinary single documents alongside a bare "---" -- an exact
+  // match on the first version of this check missed all three, leaving
+  // them to fall through to the same misleading errors this test exists to
+  // rule out.
+  assert.throws(
+    () => parseWorkflowYaml("--- # comment\nfoo: bar\n"),
+    /multi-document streams/,
+  );
+  assert.throws(
+    () => parseWorkflowYaml("---   \nfoo: bar\n"),
+    /multi-document streams/,
+  );
+  assert.throws(
+    () => parseWorkflowYaml("--- foo\n"),
+    /multi-document streams/,
+  );
+  // Contrast: "---" as an ordinary scalar VALUE (not a bare structural
+  // line) is unaffected -- it's just the three-character string "---".
+  const doc = parseWorkflowYaml("key: ---\n");
+  assert.equal(doc.key, "---");
+  // Contrast (Codex review, mikelward/yaml-lite#6): a document indicator is
+  // only recognized at column zero -- verified against
+  // yaml.safe_load("a:\n  ---\n"), which resolves to {'a': '---'} rather
+  // than raising a multi-document error. The first version of this check
+  // ran regardless of indentation and wrongly rejected this as a document
+  // marker; it now falls through to the pre-existing, already-correct
+  // implicit-multi-line-plain-scalar rejection instead (a single-line
+  // scalar continuation is that construct's one-line case, covered above).
+  assert.throws(
+    () => parseWorkflowYaml("a:\n  ---\n"),
+    /implicit multi-line plain scalar/,
+  );
+  // A top-level SEQUENCE stops cleanly at "---"/"..." rather than consuming
+  // it (Codex review, mikelward/yaml-lite#6) -- neither a "- " entry, so
+  // parseSequence returns before reaching it, leaving it as leftover at the
+  // top-level parse's own generic "stopped parsing" check rather than at
+  // parseNode's or a mapping's check above. Both forms previously reported
+  // that generic error instead of naming the real cause.
+  assert.throws(
+    () => parseWorkflowYaml("- foo\n---\n- bar\n"),
+    /multi-document streams/,
+  );
+  assert.throws(
+    () => parseWorkflowYaml("- foo\n...\n"),
+    /multi-document streams/,
+  );
+  // Contrast: an ordinary top-level sequence with no marker is unaffected.
+  assert.deepEqual(parseWorkflowYaml("- foo\n- bar\n"), ["foo", "bar"]);
+  // Contrast (Codex review, mikelward/yaml-lite#6): the separator after a
+  // document indicator must be an actual space or tab, not any JS `\s`
+  // character. Verified against yaml.safe_load("---\xa0foo: bar\n") (\xa0
+  // is U+00A0, a non-breaking space, which \s treats as whitespace but
+  // YAML does not) -> {'---\xa0foo': 'bar'} -- the WHOLE prefix is one
+  // ordinary plain-scalar key, not a document marker at all. A `\s`-based
+  // check wrongly rejected this as a multi-document stream. Written as an
+  // explicit \u00A0 escape rather than a literal character in this source
+  // file, which would otherwise be indistinguishable from an ordinary
+  // space to anyone reading or editing it.
+  const nbsp = parseWorkflowYaml("---\u00A0foo: bar\n");
+  assert.equal(nbsp["---\u00A0foo"], "bar");
+});
+
 test("throws on a sequence entry in value position, rather than fabricating a literal string", () => {
   // Four shapes all previously fell through to the plain-scalar return and
   // came back as the literal text ("- x"), each verified against
