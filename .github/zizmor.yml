@@ -33,9 +33,19 @@ rules:
         # Everything else must pin to a hash.
         "*": hash-pin
   dangerous-triggers:
-    # Both triggers are load-bearing and reasoned through in
-    # mikelward/codex-review's docs/CONSUMER.md.
+    # These triggers are load-bearing: the codex-review pair is reasoned
+    # through in mikelward/codex-review's docs/CONSUMER.md, and ci.yml in
+    # its own header.
     ignore:
+      # The trusted-verdicts pilot: pull_request_target so the job
+      # definitions always load from the base branch and the App-posted
+      # `lanes` status cannot be minted by a PR rewriting its own
+      # workflow. The one job that executes PR code (test) references no
+      # secrets and carries no environment; init/finalize hold the App
+      # credential in a base-ref-restricted environment and execute
+      # nothing from the PR. See ci.yml's header and mikelward/lanes
+      # TODO.md ("Trusted verdicts need an explicit publisher").
+      - ci.yml
       # The sweep: never checks out or executes pull request code at all.
       - codex-review.yml
       # The consumer-side check: pull_request_target so the JOB DEFINITION
