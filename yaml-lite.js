@@ -640,6 +640,50 @@ function parseWorkflowYaml(text) {
   // block, so this mirrors that rule rather than reinventing one.
   const MAPPING_KEY_RE = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^:]+?):(?:\s.*)?$/;
 
+  // A bare `---`/`...` line is a document-stream marker, not a mapping key
+  // or a scalar — real YAML: yaml.safe_load("foo: bar\n...\n") accepts a
+  // lone trailing "..." as a single document's end, and
+  // yaml.safe_load("foo: bar\n---\nbaz: qux\n") raises "expected a single
+  // document in the stream" once a SECOND "---" actually starts a new one.
+  // This parser doesn't model that leading/trailing-marker-is-fine nuance
+  // (the file header already excludes multi-document streams, and a
+  // workflow file has no reason to carry one) — every occurrence throws
+  // this one clearly-scoped error, rather than falling through to
+  // parseNode's "implicit multi-line plain scalar" guess or
+  // splitKeyValue's generic "could not parse mapping entry", both of
+  // which misdiagnose what's actually happening.
+  // Legal trailing forms verified against yaml.safe_load: "--- # comment",
+  // "---   " (trailing separation space), and "--- foo" (inline content on
+  // the marker's own line) all parse as the single document {'foo': 'bar'}
+  // alongside a bare "---" — document indicators only need whitespace or
+  // end-of-line after them, not an exact match. "..." works the same way
+  // for a trailing comment ("... # end"); "... value" is invalid YAML in
+  // its own right (a ScannerError, not a construct this file would ever
+  // need to accept), but rejecting it here too is harmless since it's
+  // out of scope either way.
+  //
+  // `[ \t]`, not `\s` (Codex review, mikelward/yaml-lite#6): YAML's own
+  // separation-in-line rule after a block indicator is space or tab only,
+  // not the wider set JS's `\s` matches. Verified against yaml.safe_load:
+  // "--- foo: bar" (a non-breaking space, which \s treats as
+  // whitespace but YAML does not) resolves to {'--- foo': 'bar'} —
+  // the WHOLE prefix is one ordinary plain-scalar key, not a document
+  // marker at all — so matching \s here would misclassify a supported
+  // mapping as a multi-document stream. Same reasoning as the block-scalar
+  // header match a few lines up, which uses ` +` for the same reason.
+  // `\r?$` keeps a CRLF-terminated line ("---\r") matching bare end-of-line
+  // the way the broader `\s` used to, without accepting stray characters
+  // before a real end of string.
+  const DOCUMENT_MARKER_RE = /^(?:---|\.\.\.)(?:[ \t]|\r?$)/;
+
+  function rejectDocumentMarker(content, lineNumber) {
+    if (DOCUMENT_MARKER_RE.test(content)) {
+      throw new Error(
+        `yaml-lite: multi-document streams are not supported (got ${JSON.stringify(content)} at line ${lineNumber})`,
+      );
+    }
+  }
+
   function parseNode(indent) {
     const line = peek();
     if (!line) return null;
@@ -648,6 +692,14 @@ function parseWorkflowYaml(text) {
     if (line.content.startsWith("- ") || line.content === "-") {
       return parseSequence(line.indent);
     }
+    // Document indicators are only recognized at column zero -- verified
+    // against yaml.safe_load("a:\n  ---\n"), which resolves to {'a':
+    // '---'} (an ordinary nested plain scalar), not a document-stream
+    // error. Every recursive parseNode call is reached only after the
+    // caller already confirmed a deeper indent than its parent, so
+    // line.indent is 0 here if and only if this line is genuinely
+    // top-level, unindented content.
+    if (line.indent === 0) rejectDocumentMarker(line.content, line.n);
     if (!MAPPING_KEY_RE.test(line.content)) {
       // A deeper-indented block whose first line is neither a sequence
       // item nor a "key:"/"key: value" mapping entry is an implicit,
@@ -760,6 +812,10 @@ function parseWorkflowYaml(text) {
     return obj;
 
     function applyMappingEntry(target, content, ownIndent, rawIndex) {
+      // Column zero only, same reasoning as parseNode's call: real YAML
+      // recognizes a document marker only at the top of the file, and
+      // ownIndent is 0 here only for a genuinely unindented line.
+      if (ownIndent === 0) rejectDocumentMarker(content, rawLines[rawIndex].n);
       const { key, rest, isBlockScalar, style, chomp } = splitKeyValue(content);
       checkDuplicateKey(target, key, rawLines[rawIndex].n);
       if (isBlockScalar) {
@@ -815,6 +871,7 @@ function parseWorkflowYaml(text) {
     while (peek() && peek().indent === indent) {
       const line = structural[pos];
       pos++;
+      if (indent === 0) rejectDocumentMarker(line.content, line.n);
       const { key, rest, isBlockScalar, style, chomp } = splitKeyValue(line.content);
       checkDuplicateKey(obj, key, line.n);
       if (isBlockScalar) {
@@ -832,6 +889,13 @@ function parseWorkflowYaml(text) {
   if (structural.length === 0) return {};
   const doc = parseNode(structural[0].indent);
   if (pos < structural.length) {
+    // A top-level sequence stops cleanly at a "---"/"..." line rather than
+    // consuming it (it isn't a "- " entry), which leaves it right here as
+    // leftover rather than reaching parseNode's or a mapping's own check
+    // above -- found by Codex review on "- foo\n---\n- bar\n" and
+    // "- foo\n...\n", both of which reported the generic "stopped parsing"
+    // instead of naming the real cause.
+    if (structural[pos].indent === 0) rejectDocumentMarker(structural[pos].content, structural[pos].n);
     throw new Error(
       `yaml-lite: stopped parsing at line ${structural[pos].n} — unsupported construct or indentation this parser doesn't handle`,
     );
