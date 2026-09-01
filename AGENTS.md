@@ -137,6 +137,9 @@ one that has stopped biting.
   working" interjection — address it in your very next output, before
   starting or continuing any further tool call, even if it's only one
   sentence. Don't let it queue up behind an in-flight chain of tool calls.
+- **Don't narrate routine machinery.** A check run flipping, a re-run, a scheduled check
+  re-arming, a webhook echo, a resolved thread — act on those silently; the noise buries
+  the one line that matters.
 
 ## Privacy
 
