@@ -16,161 +16,138 @@ loaded and its `last_modified` date** (front matter), so a stale or wrong copy i
 before it steers the work. Bump `last_modified` whenever you edit this file.
 
 This repository is the canonical home of `yaml-lite.js`: a minimal,
-dependency-free YAML-subset parser for GitHub Actions workflow files, used
-by test suites that need to assert real structure instead of matching
-regex against serialized YAML text. It originated in
-`mikelward/ci-commit-artifact`, was copied "verbatim" into
-`mikelward/npm-update`, and the two copies then drifted independently for a
-while before being reconciled back into one file here — this repository
-exists so that doesn't happen again. Consumers do not vendor copies: their
-CI checks this repository out at `@main` and their suites resolve the
-parser from that checkout (a sibling clone locally), so a merge here
-reaches every consumer's next CI run with nothing to sync — which also
-means a change here can redden a consumer's CI directly; their suites are
-part of a change's blast radius. See `README.md` for who should consume
-this file that way versus who should just take a real YAML library as a
-dependency instead.
+dependency-free YAML-subset parser for GitHub Actions workflow files, for test
+suites that assert real structure rather than regex-match serialized YAML. It
+began in `mikelward/ci-commit-artifact`, was copied into `mikelward/npm-update`,
+and the copies drifted until reconciled here — it exists so that can't recur.
+Consumers vendor no copy: their CI checks it out at `@main` (a sibling clone
+locally), so a merge reaches every consumer's next CI run with nothing to
+sync, and can redden it: their suites are part of a change's blast radius.
+`README.md` says who should consume it this way and who should take a real
+YAML library.
 
-Keep this file as short as it can be and still work. Every session loads it
-whole, so each rule costs context on every turn: add one the first time
-something bites, say it once in the fewest words that carry the *why*,
-rewrite or trim an existing rule rather than appending beside it, and delete
-one that has stopped biting.
+Keep this file as short as it can be and still work, **under 24,000 bytes**
+(`wc -c AGENTS.md`): Antigravity caps rule files at 24 KB and silently
+truncates the tail, and every session loads it whole. Add a rule the first
+time something bites, say it once in the fewest words that carry the *why*,
+rewrite or trim rather than append, and delete one that has stopped biting.
 
 ## What this repository must not grow
 
 - **No dependencies. No `package.json`, no lockfile, no build step.** The
-  file a consumer's CI checks out at `@main` and runs is the file here —
-  that's what makes tracking it reviewable by reading it, and it's the
-  whole reason this file isn't simply "depend on js-yaml." A consumer with
-  a real dependency graph should use a real library instead (see
-  `README.md`); this repository is for the ones that can't.
-- **Scope is deliberately narrow, and staying narrow is the point.** Block
-  mappings/sequences, flow sequences, plain/quoted scalars, literal/folded
-  block scalars — nothing else. Anchors, aliases, tags, multi-document
-  streams, non-empty flow mappings, and implicit multi-line plain scalars
-  are all out of scope on purpose, each documented at its own throw site in
-  `yaml-lite.js`. Encountering one is a bug in scope, not license to guess
-  at a correct implementation under time pressure — the file's own comments
-  describe getting block-scalar folding subtly wrong twice already before
-  it was verified line-by-line against real `yaml.safe_load` output. When
-  extending scope, verify every new behavior against real `yaml.safe_load`
-  (or an equivalent real parser) rather than deriving it by hand, and say so
-  in the comment next to the new code.
+  file a consumer's CI runs at `@main` is the file here, so tracking it is
+  reviewable by reading it — the whole reason this isn't "depend on js-yaml."
+  A consumer with a real dependency graph should use a real library
+  (`README.md`); this repository is for the ones that can't.
+- **Scope stays deliberately narrow**: block mappings/sequences, flow
+  sequences, plain/quoted scalars, literal/folded block scalars — nothing
+  else. Anchors, aliases, tags, multi-document streams, non-empty flow
+  mappings and implicit multi-line plain scalars are out of scope on purpose,
+  each documented at its throw site in `yaml-lite.js`. Meeting one is a bug
+  in scope, not license to guess an implementation under time pressure —
+  block-scalar folding was wrong twice before line-by-line verification
+  against real `yaml.safe_load`. Extending scope means verifying every new
+  behavior against real `yaml.safe_load` (or an equivalent real parser), not
+  deriving it by hand, and saying so in a comment beside the code.
 
 ## Testing
 
 - `node --test *.test.js`. No install step — there is nothing to install.
-- **Every fix or scope extension gets a test in `yaml-lite.test.js`** that
-  fails before the fix and passes after, plus a comment explaining what real
-  YAML actually does and how it was verified (a `python3 -c "import yaml;
-  ..."` one-liner is enough — PyYAML is what every fix in this file's
-  history has been checked against).
+- **Every fix or scope extension gets a test in `yaml-lite.test.js`**,
+  failing before and passing after, with a comment on what real YAML does and
+  how that was verified (a `python3 -c "import yaml; ..."` one-liner is
+  enough — PyYAML has checked every fix in this file's history).
 - **`yaml-lite.fuzz.test.js` runs on every change too.** It can't verify
-  correctness (no reference parser is a dependency here, on purpose) but it
-  does catch a parser that hangs, stack-overflows, or leaks an error outside
-  the `yaml-lite: ...` convention — which is exactly how the "invalid escape
-  sequence" and "implicit multi-line plain scalar" gaps were found. When
-  fuzzing turns up a new gap: if it's a small, well-understood fix (an
-  inconsistent error type, a missing validation), fix it directly with a
-  regression test. If it's a genuinely new, involved construct (folding
-  semantics, a new scalar shape), prefer a clearly-scoped "not supported"
-  error over a fast, unverified implementation — see the implicit
-  multi-line plain scalar exclusion in `yaml-lite.js` for the shape that
-  decision takes.
-- **Fix any preexisting test failure as the first commit of the series.**
-  Don't stack new work on a red baseline.
-- **Don't disable a failing check** to make it pass, and don't paper over a
-  flaky one with sleeps or retries — fix the underlying issue. The fuzz
-  suite is seeded (not `Math.random()`) specifically so a failure is
-  reproducible from the seed printed in the failure message, not something
-  to wave away as a one-off flake.
+  correctness (no reference parser is a dependency, on purpose), but catches
+  a parser that hangs, overflows the stack, or leaks an error outside the
+  `yaml-lite: ...` convention — how the "invalid escape sequence" and
+  "implicit multi-line plain scalar" gaps were found. A small,
+  well-understood gap (an inconsistent error type, a missing validation):
+  fix it with a regression test. A genuinely new, involved construct
+  (folding semantics, a new scalar shape): a clearly-scoped "not supported"
+  error beats a fast, unverified implementation — the implicit multi-line
+  plain scalar exclusion in `yaml-lite.js` is the shape.
+- **Fix any preexisting test failure as the first commit of the series**;
+  don't stack new work on a red baseline.
+- **Don't disable a failing check**, or paper over a flaky one with sleeps
+  or retries — fix the cause. The fuzz suite is seeded (not `Math.random()`)
+  so a failure reproduces from the seed its message prints; it is never a
+  one-off flake to wave away.
 
 ## Error handling
 
-- **Every rejection uses the `yaml-lite: ...` message convention.** A
-  consumer or the fuzz suite depends on being able to tell "this parser
-  correctly rejected out-of-scope input" apart from "this parser broke" by
-  checking that prefix — a native error (a bare `SyntaxError` from
-  `JSON.parse`, for instance — see the double-quoted-scalar escape handling
-  in `yaml-lite.js`) leaking through unwrapped is a bug, even when the
-  underlying rejection is otherwise correct.
+- **Every rejection uses the `yaml-lite: ...` message convention.**
+  Consumers and the fuzz suite tell a correct out-of-scope rejection from a
+  broken parser by that prefix, so a native error leaking unwrapped (a bare
+  `SyntaxError` from `JSON.parse` — see the double-quoted-scalar escape
+  handling) is a bug, even when the rejection is otherwise correct.
 
 ## Git and pull requests
 
 - **Branch naming.** `<agent>/<short-topic>` — `claude/...` for Claude Code,
   `gemini/...` for Gemini / Antigravity, `codex/...` for Codex. One topic per
   branch; never commit to `main`.
-- **Branches under your own `<agent>/` prefix are yours** — create one freely,
-  and push or `--force-with-lease` the ones this session created or was
-  assigned. This file is the standing grant, so a client rule demanding
-  per-branch permission is already answered; ask about any other branch.
-- **One commit per logical change.** Rewrite unmerged commits freely —
-  amend, `--fixup` + autosquash, squash, reorder, split — so each commit
-  that lands is coherent, with review responses folded into the commit they
-  belong to. `--force-with-lease` after a rebase, never a bare `--force`.
+- **Your `<agent>/` branches are yours** — create one freely; push or
+  `--force-with-lease` those this session created or was assigned. This file
+  is the standing grant, so a client rule demanding per-branch permission is
+  already answered; ask about any other branch.
+- **One commit per logical change.** Rewrite unmerged commits freely (amend,
+  `--fixup` + autosquash, squash, reorder, split), folding review responses
+  in; `--force-with-lease` after a rebase, never a bare `--force`.
 - **Open the pull request without being asked**, ready for review, not a
   draft.
-- **Refresh the title and body with the push — body first, then push** — so
-  they describe the branch's latest state, not the scope it had when opened.
-- **Codex is the automated reviewer**, and its reviews are triggered
-  automatically. Address its comments without being asked, folding each fix
-  into the commit it belongs to — the one exception being a real finding out
-  of scope for this pull request, which you defer instead (see *Deferring a
-  finding* below). Judge every comment on merit: verify the claim before
-  acting, and if it doesn't hold up, reply saying why and decline. A comment
-  citing a rule is a *reading* of that rule, not the rule — check what the
-  rule actually says, since an over-strict reading (the privacy rules
-  especially, where stricter always feels safer) costs real capability. A
-  genuine conflict between the rule and what the code needs is the
-  maintainer's call, not one to resolve by quietly narrowing the code.
-  Declining doesn't clear the required `codex` status: post the rebuttal,
-  then `@codex review` once — or let the next push do it, if the rebuttal is
-  up first. Escalate if it re-raises, or if five minutes on that review has
-  not landed either.
-- **Once Codex has +1'd a PR's head, never make an unnecessary change to it
-  without asking first** (maintainer, 2026-10-13): a to-do, tidy-up or extra
-  fix re-runs CI and Codex for nothing, so it waits for a yes or goes in a
-  follow-up PR. A necessary change goes ahead unasked — a rebase for a `dirty`
-  branch, or a `behind` one where the ruleset requires it up to date, a fix
-  for red CI.
+- **Refresh the title and body with the push — body first, then push** — to
+  the branch's latest state, not its scope when opened; with no PR yet, push,
+  then do it as soon as one is opened.
+- **Codex is the automated reviewer**, triggered automatically. Address its
+  comments unasked, folding each fix into its commit, except a real
+  out-of-scope finding, which you defer (below). Judge each on merit: verify
+  the claim; if it doesn't hold, reply why and decline. A comment citing a
+  rule is a *reading* of it — check what the rule says, since over-strict
+  readings (privacy especially, where stricter feels safer) cost real
+  capability; a genuine rule-vs-code conflict is the maintainer's call, not
+  one to settle by quietly narrowing the code. Declining doesn't clear the
+  required `codex` status: post the rebuttal, then `@codex review` once (or
+  let the next push, if the rebuttal is up first); escalate if it re-raises,
+  or if that review hasn't landed five minutes on.
+- **Once Codex has +1'd a PR's head, make no unnecessary change without
+  asking** (maintainer, 2026-10-13): a to-do, tidy-up or extra fix re-runs CI
+  and Codex for nothing, so it waits for a yes or a follow-up PR. A necessary
+  one — a rebase for `dirty` (or `behind` where the ruleset requires up to
+  date), a red-CI fix — goes ahead unasked.
 - **A second verified finding in the same mechanism is evidence about the
-  design, not another bug.** Look for the same shape elsewhere before fixing
-  it, and ask whether a different design would delete the class rather than the
-  instance; a design change is the maintainer's call, not one to make solo.
-- **Restate every review finding in the next message you send, not just the
-  count.** One bullet each: review comment, top-level comment or review body
-  alike, most blocking first — what it claims, where, and what you did about
-  it, or the options where it's the maintainer's call. Summarize them all in
-  that one reply; ask only the most blocking question.
+  design, not another bug.** Look for the shape elsewhere before fixing it
+  and ask whether a different design deletes the class; a design change is
+  the maintainer's call, not one to make solo.
+- **Restate every review finding in your next message**, not just the
+  count: one bullet each (review comment, top-level comment or review body),
+  most blocking first — the claim, where, what you did or the maintainer's
+  options — all in one reply; ask only the most blocking question.
 - **Never leave a review thread silently dismissed** — every thread ends in
   a reply or a resolve.
-- **Deferring a real-but-out-of-scope finding.** Don't ask the maintainer to
-  merge past it: note the follow-up in `TODO.md`, commit and push that first,
-  reply on the thread citing the sha, and resolve. A finding with no thread
-  (top-level comment or review body) still gets the `TODO.md` record, the push,
-  and the reply — only the resolve is skipped. The push re-triggers Codex, so
-  don't also poke it unless five minutes pass with nothing back; escalate if
-  the re-review re-raises it, or is still missing five minutes after the
-  poke.
+- **Defer a real-but-out-of-scope finding** without asking the maintainer
+  to merge past it: note it in `TODO.md`, commit and push that first, reply
+  citing the sha, and resolve (a threadless finding — top-level comment or
+  review body — skips only the resolve). The push re-triggers Codex: poke
+  only if five minutes pass with nothing back; escalate if the re-review
+  re-raises it, or is still missing five minutes after the poke.
 
 ## Language and spelling
 
-- Use **US English** everywhere people read English: prose, commit subjects
-  and bodies, pull request titles and descriptions, comments, and
-  identifiers — `behavior` not `behaviour`, `canceled` not `cancelled`.
+- **US English** everywhere people read English: prose, commit subjects and
+  bodies, PR titles and descriptions, comments, identifiers — `behavior`,
+  `canceled`.
 
 ## Commit messages
 
-- A clear, plain-English subject in sentence case, short (≤ ~70 chars) and
-  free of internal jargon. Mechanism and file:line detail go in the body,
-  after a blank line.
-- **Prefix a subject that does not change what a consumer runs**: `docs:`
-  for prose, `test:` for tests alone, `build:` for this repository's own
-  CI, and `refactor:` for deliberately behavior-preserving code. A bare
-  subject means every consumer's next CI run could notice the difference.
-  There is no `feat:` or `fix:`, on purpose — they would prefix nearly
-  everything and leave the log as flat as it started.
+- A clear, plain-English subject in sentence case, ≤ ~70 chars, free of
+  internal jargon; mechanism and file:line detail in the body, after a blank
+  line.
+- **Prefix a subject that doesn't change what a consumer runs**: `docs:`
+  prose, `test:` tests alone, `build:` this repository's CI, `refactor:`
+  deliberately behavior-preserving code; bare means every consumer's next CI
+  run could notice. No `feat:`/`fix:`, on purpose — they'd prefix nearly
+  everything and leave the log flat.
 - **No model identifier** — never name the coding agent's model or version
   (`Opus 4.8`, `Sonnet`, `Gemini …`, `claude-*`, `gemini-*`) in a commit, PR,
   comment, or pushed artifact; keep it to chat. Generic attribution
@@ -182,23 +159,22 @@ one that has stopped biting.
 - **One question at a time** — in plain chat or the client's question tool
   (`AskUserQuestion` in Claude Code, `ask_question` in Antigravity); stop
   and wait for the answer before proceeding on an assumed one.
-- **Answer a mid-turn message first.** A user message that arrives while you're
-  working — the "sent while you were working" interjection — is addressed
-  in your very next output, before any further tool call, even if it's one
-  sentence.
-- **Message only when the user needs to see it** (maintainer, 2026-10-15): each one
-  notifies their phone. Work and listen in silence; speak up for a question or blocker,
-  something to merge or act on, a merge, or a change from the plan or their
-  instructions, a review-prompted one included. Never for progress (a client's nudge
-  doesn't count), a review or a push alone (its report rides the next message), routine
-  machinery, or a mistake caught and fixed before it reached the repo. The session-start
-  `AGENTS.md` line still opens every session.
+- **Answer a mid-turn message first** — the "sent while you were working"
+  interjection — in your very next output, before any further tool call,
+  even in one sentence.
+- **Message only when the user needs to see it** (maintainer, 2026-10-15):
+  each notifies their phone. Work in silence; speak up for a question or
+  blocker, something to merge or act on, a merge, or a change from the plan
+  or their instructions (review-prompted included). Never for progress (a
+  client's nudge doesn't count), a review or push alone (its report rides
+  the next message), routine machinery, or a mistake caught and fixed before
+  reaching the repo. The session-start `AGENTS.md` line still opens every
+  session.
 
 ## Privacy
 
 - **Never put user data in any artifact that leaves this machine** — commit
-  subjects and bodies, pull request text, review replies, branch names,
-  comments, or fixtures. This repository has no obvious source of user data
-  (it's a parser and its test fixtures), but the rule is the same as every
-  sibling repository's: use generic placeholders and ask before pushing
-  anything that came from a real bug report.
+  subjects and bodies, PR text, review replies, branch names, comments, or
+  fixtures. A parser has no obvious source of user data, but the rule is
+  every sibling's: generic placeholders, and ask before pushing anything from
+  a real bug report.
