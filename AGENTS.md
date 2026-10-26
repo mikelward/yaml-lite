@@ -26,7 +26,7 @@ sync, and can redden it: their suites are part of a change's blast radius.
 `README.md` says who should consume it this way and who should take a real
 YAML library.
 
-Keep this file as short as it can be and still work, **under 24,000 bytes**
+Keep this file as short as it can be and still work, **under 22,000 bytes**
 (`wc -c AGENTS.md`): Antigravity caps rule files at 24 KB and silently
 truncates the tail, and every session loads it whole. Add a rule the first
 time something bites, say it once in the fewest words that carry the *why*,
